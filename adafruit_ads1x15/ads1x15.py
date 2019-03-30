@@ -38,6 +38,8 @@ from adafruit_bus_device.i2c_device import I2CDevice
 _ADS1X15_DEFAULT_ADDRESS            = const(0x48)
 _ADS1X15_POINTER_CONVERSION         = const(0x00)
 _ADS1X15_POINTER_CONFIG             = const(0x01)
+_ADS1X15_POINTER_LO_THRESH          = const(0x02)
+_ADS1X15_POINTER_HI_THRESH          = const(0x03)
 _ADS1X15_CONFIG_OS_SINGLE           = const(0x8000)
 _ADS1X15_CONFIG_MUX_OFFSET          = const(12)
 _ADS1X15_CONFIG_COMP_QUE_DISABLE    = const(0x0003)
@@ -68,9 +70,11 @@ class ADS1x15(object):
         #pylint: disable=too-many-arguments
         self.buf = bytearray(3)
         self._data_rate = self._gain = self._mode = None
+        self._comparator_config = None
         self.gain = gain
         self.data_rate = self._data_rate_default() if data_rate is None else data_rate
         self.mode = mode
+        self.comparator_config = 0b00011
         self.i2c_device = I2CDevice(i2c, address)
 
     @property
@@ -125,7 +129,16 @@ class ADS1x15(object):
             raise ValueError("Unsupported mode.")
         self._mode = mode
 
-    def read(self, pin, is_differential=False):
+    @property
+    def comparator_config(self):
+        """The comparator configration bits."""
+        return self._comparator_config
+
+    @comparator_config.setter
+    def comparator_config(self, config):
+        self._comparator_config = config
+
+    def read(self, pin, is_differential=False, fast=False):
         """I2C Interface for ADS1x15-based ADCs reads.
 
         params:
@@ -133,7 +146,7 @@ class ADS1x15(object):
             :param bool is_differential: single-ended or differential read.
         """
         pin = pin if is_differential else pin + 0x04
-        return self._read(pin)
+        return self._read(pin, fast)
 
     def _data_rate_default(self):
         """Retrieve the default data rate for this ADC (in samples per second).
@@ -147,21 +160,23 @@ class ADS1x15(object):
         """
         raise NotImplementedError('Subclass must implement _conversion_value function!')
 
-    def _read(self, pin):
+    def _read(self, pin, fast=False):
         """Perform an ADC read. Returns the signed integer result of the read."""
-        config = _ADS1X15_CONFIG_OS_SINGLE
-        config |= (pin & 0x07) << _ADS1X15_CONFIG_MUX_OFFSET
-        config |= _ADS1X15_CONFIG_GAIN[self.gain]
-        config |= self.mode
-        config |= self.rate_config[self.data_rate]
-        config |= _ADS1X15_CONFIG_COMP_QUE_DISABLE
-        self._write_register(_ADS1X15_POINTER_CONFIG, config)
+        if not fast:
+            config = _ADS1X15_CONFIG_OS_SINGLE
+            config |= (pin & 0x07) << _ADS1X15_CONFIG_MUX_OFFSET
+            config |= _ADS1X15_CONFIG_GAIN[self.gain]
+            config |= self.mode
+            config |= self.rate_config[self.data_rate]
+            config |= self.comparator_config
+            #config |= _ADS1X15_CONFIG_COMP_QUE_DISABLE
+            self._write_register(_ADS1X15_POINTER_CONFIG, config)
 
-        if self.mode == Mode.SINGLE:
-            while not self._conversion_complete():
-                pass
+            if self.mode == Mode.SINGLE:
+                while not self._conversion_complete():
+                    time.sleep(0.01)
 
-        return self.get_last_result()
+        return self._conversion_value(self.get_last_result(fast))
 
     def _conversion_complete(self):
         """Return status of ADC conversion."""
@@ -170,11 +185,20 @@ class ADS1x15(object):
         # OS = 1: Device is not currently performing a conversion
         return self._read_register(_ADS1X15_POINTER_CONFIG) & 0x8000
 
-    def get_last_result(self):
+    def get_last_result(self, fast=False):
         """Read the last conversion result when in continuous conversion mode.
-        Will return a signed integer value.
+        Will return a signed integer value. If fast is True, the register
+        pointer is not updated as part of the read. This reduces I2C traffic
+        and increases possible read rate.
         """
-        return self._conversion_value(self._read_register(_ADS1X15_POINTER_CONVERSION))
+        return self._read_register(_ADS1X15_POINTER_CONVERSION, fast)
+
+    def _enable_conversion_ready(self):
+        # MSB of high treshold set to 1
+        self._write_register(_ADS1X15_POINTER_HI_THRESH, 1<<15)
+        # MSB of low threshold set to 0
+        self._write_register(_ADS1X15_POINTER_LO_THRESH, 0)
+        #
 
     def _write_register(self, reg, value):
         """Write 16 bit value to register."""
@@ -184,10 +208,15 @@ class ADS1x15(object):
         with self.i2c_device as i2c:
             i2c.write(self.buf)
 
-    def _read_register(self, reg):
+    def _read_register(self, reg, fast=False):
         """Read 16 bit register value."""
-        self.buf[0] = reg
+        # self.buf[0] = reg
+        # with self.i2c_device as i2c:
+        #     i2c.write(self.buf, end=1, stop=False)
+        #     i2c.readinto(self.buf, end=2)
         with self.i2c_device as i2c:
-            i2c.write(self.buf, end=1, stop=False)
-            i2c.readinto(self.buf, end=2)
+            if fast:
+                i2c.readinto(self.buf, end=2)
+            else:
+                i2c.write_then_readinto(bytearray([reg]), self.buf, in_end=2, stop=False)
         return self.buf[0] << 8 | self.buf[1]
