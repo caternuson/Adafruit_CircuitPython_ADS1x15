@@ -90,7 +90,6 @@ class AnalogIn():
     def __enter__(self):
         if AnalogIn.fast_read_channel is not None:
             raise RuntimeError("Fast read in use by another channel.")
-            return None
         AnalogIn.fast_read_channel = self
         # do a throw away read to set pointer register
         self._ads.read(self._pin_setting, is_differential=self.is_differential)
