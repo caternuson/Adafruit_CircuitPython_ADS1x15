@@ -36,7 +36,10 @@ print("Sample rate requested={} actual={}".format(RATE, SAMPLES / total_time))
 #  Fast Mode (continuous)
 #--------------------------------------------------
 ads.mode = 0x0000 # continuous
+# next 3 lines set ALRT pin to conversion ready
 ads.comparator_config = 0
+ads._write_register(0b10, 0x0000) # set MSB of low threshold register to 0
+ads._write_register(0b11, 0xFFFF) # set MSF of high threshold register to 1
 ready_pin = DigitalInOut(board.D23)
 ready_pin.direction = Direction.INPUT
 print("Acquiring fast...")
